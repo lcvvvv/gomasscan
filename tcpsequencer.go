@@ -1,4 +1,4 @@
-package scanner
+package gomasscan
 
 import (
 	"math"
@@ -14,8 +14,8 @@ type TCPSequencer struct {
 	current uint32
 }
 
-// NewTCPSequencer creates a new linear tcp sequenc enumber generator
-func NewTCPSequencer() *TCPSequencer {
+// newTCPSequencer creates a new linear tcp sequenc enumber generator
+func newTCPSequencer() *TCPSequencer {
 	// Start the sequence with math.MaxUint32, which will then wrap around
 	// when incremented starting the sequence with 0 as desired.
 	return &TCPSequencer{current: math.MaxUint32}

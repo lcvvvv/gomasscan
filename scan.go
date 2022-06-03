@@ -1,18 +1,33 @@
-package scanner
+package gomasscan
 
 import (
+	"context"
 	"fmt"
+	"golang.org/x/time/rate"
+	"log"
 	"math/rand"
 	"net"
+	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
-	"github.com/projectdiscovery/gologger"
 	"github.com/projectdiscovery/ipranger"
 	"github.com/projectdiscovery/networkpolicy"
 )
+
+var logger = Logger(log.New(os.Stderr, "[scanner]", log.Ldate|log.Ltime))
+
+type Logger interface {
+	Println(...interface{})
+	Printf(string, ...interface{})
+}
+
+func SetLogger(log Logger) {
+	logger = log
+}
 
 // PkgFlag represent the TCP packet flag
 type PkgFlag int
@@ -43,6 +58,9 @@ type Scanner struct {
 	//结束标识符
 	done        bool
 	HandlerOpen func(ip string, port int)
+	//发包速率
+	limit      *rate.Limiter
+	limitCount uint64
 
 	//retries           int
 	//rate              int
@@ -108,21 +126,29 @@ func NewScanner() (*Scanner, error) {
 			ComputeChecksums: true,
 		},
 
-		tcpSequencer: NewTCPSequencer(),
+		tcpSequencer: newTCPSequencer(),
 		ipRanger:     iprang,
 		HandlerOpen:  func(ip string, port int) {},
+
+		limitCount: 0,
 
 		//timeout:      time.Second * 3,
 		//retries:      3,
 		//rate:         1024,
 	}
 
+	scanner.SetRate(1024)
+
 	if newScannerCallback != nil {
 		if err := newScannerCallback(scanner); err != nil {
 			return nil, err
 		}
 	}
-
+	//初始化
+	err = scanner.init()
+	if err != nil {
+		return nil, err
+	}
 	return scanner, nil
 }
 
@@ -136,6 +162,11 @@ func (s *Scanner) Done() {
 // Add the scanner and add ip filter in ipRanger
 func (s *Scanner) Add(host string) error {
 	return s.ipRanger.Add(host)
+}
+
+// Count of scanner send syn packet
+func (s *Scanner) Count() uint64 {
+	return s.limitCount
 }
 
 // startWorkers of the scanner
@@ -168,7 +199,6 @@ func (s *Scanner) sendAsyncPkg(ip string, port int, pkgFlag PkgFlag) {
 		OptionLength: 4,
 		OptionData:   []byte{0x05, 0xB4},
 	}
-
 	tcp := layers.TCP{
 		SrcPort: layers.TCPPort(s.listenPort),
 		DstPort: layers.TCPPort(port),
@@ -185,11 +215,11 @@ func (s *Scanner) sendAsyncPkg(ip string, port int, pkgFlag PkgFlag) {
 
 	err := tcp.SetNetworkLayerForChecksum(&ip4)
 	if err != nil {
-		gologger.Debug().Msgf("Can not set network layer for %s:%d port: %s\n", ip, port, err)
+		logger.Printf("Can not set network layer for %s:%d port: %s\n", ip, port, err)
 	} else {
 		err = s.send(ip, s.tcpPacketListener, &tcp)
 		if err != nil {
-			gologger.Debug().Msgf("Can not send packet to %s:%d port: %s\n", ip, port, err)
+			logger.Printf("Can not send packet to %s:%d port: %s\n", ip, port, err)
 		}
 	}
 }
@@ -250,18 +280,21 @@ func (s *Scanner) tcpResultWorker() {
 
 // SendSYN outgoing TCP packets
 func (s *Scanner) SendSYN(ip string, port int, pkgtype PkgFlag) {
-	s.tcpPacketSend <- &PkgSend{
-		ip:   ip,
-		port: port,
-		flag: pkgtype,
+	err := s.limit.Wait(context.Background())
+	if err != nil {
+		panic(err)
 	}
+	s.tcpPacketSend <- &PkgSend{ip, port, pkgtype, ""}
+	atomic.AddUint64(&s.limitCount, 1)
 }
 
-func (s *Scanner) Init() error {
+func (s *Scanner) init() error {
+	//初始化发包源IP及网卡
 	err := s.initSource(DefaultExternalTargetForGetSource)
 	if err != nil {
 		return err
 	}
+	//初始化监听网卡流量
 	err = s.listen()
 	if err != nil {
 		return err
@@ -285,7 +318,7 @@ func (s *Scanner) listen() error {
 			continue // interface down
 		}
 		if err := s.listenInterface(itf.Name); err != nil {
-			gologger.Warning().Msgf("Error on interface %s: %s", itf.Name, err)
+			logger.Printf("Error on interface %s: %s", itf.Name, err)
 		}
 	}
 
@@ -319,6 +352,10 @@ func (s *Scanner) initSource(ip string) error {
 	}
 
 	return nil
+}
+
+func (s *Scanner) SetRate(i int) {
+	s.limit = rate.NewLimiter(rate.Every(time.Second/time.Duration(i)), 1)
 }
 
 // getSrcParameters gets the network parameters from the destination ip
@@ -499,7 +536,7 @@ func getInterfaceFromIP(ip net.IP) (*net.Interface, error) {
 //
 //		// not matching ip
 //		if addr.String() != dstIP {
-//			gologger.Debug().Msgf("Discarding TCP packet from non target ip %s for %s\n", dstIP, addr.String())
+//			logger.Printf("Discarding TCP packet from non target ip %s for %s\n", dstIP, addr.String())
 //			continue
 //		}
 //
@@ -511,10 +548,10 @@ func getInterfaceFromIP(ip net.IP) (*net.Interface, error) {
 //			}
 //			// We consider only incoming packets
 //			if tcp.DstPort != layers.TCPPort(rawPort) {
-//				gologger.Debug().Msgf("Discarding TCP packet from %s:%d not matching %s:%d port\n", addr.String(), tcp.DstPort, dstIP, rawPort)
+//				logger.Printf("Discarding TCP packet from %s:%d not matching %s:%d port\n", addr.String(), tcp.DstPort, dstIP, rawPort)
 //				continue
 //			} else if tcp.RST {
-//				gologger.Debug().Msgf("Accepting RST packet from %s:%d\n", addr.String(), tcp.DstPort)
+//				logger.Printf("Accepting RST packet from %s:%d\n", addr.String(), tcp.DstPort)
 //				return true, nil
 //			}
 //		}

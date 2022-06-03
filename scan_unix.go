@@ -1,6 +1,6 @@
 //go:build linux || darwin
 
-package scanner
+package gomasscan
 
 import (
 	"fmt"
@@ -16,10 +16,10 @@ import (
 )
 
 func init() {
-	newScannerCallback = NewScannerUnix
-	setupHandlerCallback = SetupHandlerUnix
-	tcpReadWorkerPCAPCallback = TCPReadWorkerPCAPUnix
-	cleanupHandlersCallback = CleanupHandlersUnix
+	newScannerCallback = newScannerUnix
+	setupHandlerCallback = setupHandlerUnix
+	tcpReadWorkerPCAPCallback = tcpReadWorkerPCAPUnix
+	cleanupHandlersCallback = cleanupHandlersUnix
 }
 
 type Handlers struct {
@@ -27,7 +27,7 @@ type Handlers struct {
 	Inactive []*pcap.InactiveHandle
 }
 
-func NewScannerUnix(scanner *Scanner) error {
+func newScannerUnix(scanner *Scanner) error {
 	rawPort, err := freeport.GetFreePort()
 	if err != nil {
 		return err
@@ -48,7 +48,7 @@ func NewScannerUnix(scanner *Scanner) error {
 	return nil
 }
 
-func SetupHandlerUnix(s *Scanner, interfaceName string) error {
+func setupHandlerUnix(s *Scanner, interfaceName string) error {
 	inactive, err := pcap.NewInactiveHandle(interfaceName)
 	if err != nil {
 		return err
@@ -96,7 +96,7 @@ func SetupHandlerUnix(s *Scanner, interfaceName string) error {
 	return nil
 }
 
-func TCPReadWorkerPCAPUnix(s *Scanner) {
+func tcpReadWorkerPCAPUnix(s *Scanner) {
 	defer s.cleanupHandlers()
 
 	var wgread sync.WaitGroup
@@ -162,7 +162,7 @@ func TCPReadWorkerPCAPUnix(s *Scanner) {
 }
 
 // cleanupHandlers for all interfaces
-func CleanupHandlersUnix(s *Scanner) {
+func cleanupHandlersUnix(s *Scanner) {
 	handler := s.handlers
 	for _, handler := range handler.Active {
 		handler.Close()
