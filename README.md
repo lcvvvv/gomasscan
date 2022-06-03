@@ -19,9 +19,9 @@ gomasscan是一个纯go编写的masscan扫描库
 package main
 
 import (
-    "fmt"
-    "github.com/lcvvvv/gomasscan"
-    "time"
+	"fmt"
+	"github.com/lcvvvv/gomasscan"
+	"time"
 )
 
 func main() {
@@ -40,9 +40,9 @@ func main() {
 	var ip = "192.168.0.1"
 	var startTime = time.Now()
 	_ = client.Add(ip)
-    //开始扫描
+	//开始扫描
 	go func() {
-		for i:=0;i<65536;i++{
+		for i := 0; i < 65536; i++ {
 			client.SendSYN(ip, i, gomasscan.SYN)
 		}
 	}()
